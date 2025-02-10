@@ -1,0 +1,131 @@
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <thread>
+#include <mutex>
+#include <algorithm>
+#include <unordered_map>
+#include <future>
+
+using namespace std;
+
+mutex mtx; // Mutex for thread-safe operations
+
+// Structure to hold CSV row data
+struct CSVRow {
+    vector<string> columns;
+};
+
+// Function to read CSV file asynchronously
+void readCSV(const string& filename, vector<CSVRow>& data) {
+    ifstream file(filename);
+    string line;
+    while (getline(file, line)) {
+        stringstream ss(line);
+        string value;
+        CSVRow row;
+        while (getline(ss, value, ',')) {
+            row.columns.push_back(value);
+        }
+        lock_guard<mutex> lock(mtx);
+        data.push_back(row);
+    }
+}
+
+// Function to sort CSV data by a given column index using parallel sorting
+void parallelSortCSV(vector<CSVRow>& data, int columnIndex) {
+    vector<thread> threads;
+    size_t numThreads = thread::hardware_concurrency();
+    size_t chunkSize = data.size() / numThreads;
+
+    vector<vector<CSVRow>> partitions(numThreads);
+    for (size_t i = 0; i < numThreads; i++) {
+        size_t start = i * chunkSize;
+        size_t end = (i == numThreads - 1) ? data.size() : start + chunkSize;
+        partitions[i] = vector<CSVRow>(data.begin() + start, data.begin() + end);
+        threads.emplace_back([&, i]() {
+            sort(partitions[i].begin(), partitions[i].end(), [columnIndex](const CSVRow& a, const CSVRow& b) {
+                return a.columns[columnIndex] < b.columns[columnIndex];
+            });
+        });
+    }
+    for (auto& t : threads) t.join();
+    data.clear();
+    for (const auto& part : partitions) {
+        data.insert(data.end(), part.begin(), part.end());
+    }
+}
+
+// Function to filter CSV data based on a column value
+vector<CSVRow> filterCSV(const vector<CSVRow>& data, int columnIndex, const string& value) {
+    vector<CSVRow> filteredData;
+    for (const auto& row : data) {
+        if (row.columns[columnIndex] == value) {
+            filteredData.push_back(row);
+        }
+    }
+    return filteredData;
+}
+
+// Function to aggregate data (count occurrences in a column)
+unordered_map<string, int> aggregateCSV(const vector<CSVRow>& data, int columnIndex) {
+    unordered_map<string, int> counts;
+    for (const auto& row : data) {
+        counts[row.columns[columnIndex]]++;
+    }
+    return counts;
+}
+
+// Function to write processed CSV data to a file
+void writeCSV(const string& filename, const vector<CSVRow>& data) {
+    ofstream file(filename);
+    for (const auto& row : data) {
+        for (size_t i = 0; i < row.columns.size(); i++) {
+            file << row.columns[i];
+            if (i < row.columns.size() - 1) file << ",";
+        }
+        file << endl;
+    }
+}
+
+// Function to print CSV data
+void printCSV(const vector<CSVRow>& data) {
+    for (const auto& row : data) {
+        for (const auto& col : row.columns) {
+            cout << col << " ";
+        }
+        cout << endl;
+    }
+}
+
+int main() {
+    vector<CSVRow> data;
+    string filename = "example.csv";
+
+    // Multi-threaded CSV reading
+    future<void> readerFuture = async(launch::async, readCSV, filename, ref(data));
+    readerFuture.get();
+
+    // Parallel Sorting example
+    parallelSortCSV(data, 0);
+    
+    // Filtering example
+    auto filteredData = filterCSV(data, 1, "target_value");
+    
+    // Aggregation example
+    auto aggregatedData = aggregateCSV(data, 2);
+    
+    // Writing sorted data to a new file
+    writeCSV("sorted_output.csv", data);
+    
+    // Writing filtered data to a new file
+    writeCSV("filtered_output.csv", filteredData);
+    
+    // Printing aggregated results
+    for (const auto& pair : aggregatedData) {
+        cout << pair.first << ": " << pair.second << endl;
+    }
+    
+    return 0;
+}
