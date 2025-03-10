@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <future>
+#include <curl/curl.h>
 
 using namespace std;
 
@@ -77,6 +78,50 @@ unordered_map<string, int> aggregateCSV(const vector<CSVRow>& data, int columnIn
     return counts;
 }
 
+// Function to compute minute-wise PCR
+unordered_map<string, pair<int, int>> computeMinuteWisePCR(const vector<CSVRow>& data, int timestampIndex, int putIndex, int callIndex) {
+    unordered_map<string, pair<int, int>> pcrData;
+    for (const auto& row : data) {
+        string minute = row.columns[timestampIndex].substr(0, 5);
+        pcrData[minute].first += stoi(row.columns[putIndex]);
+        pcrData[minute].second += stoi(row.columns[callIndex]);
+    }
+    return pcrData;
+}
+
+// Function to fetch real-time data from an API
+size_t writeCallback(void* contents, size_t size, size_t nmemb, string* output) {
+    size_t totalSize = size * nmemb;
+    output->append((char*)contents, totalSize);
+    return totalSize;
+}
+
+void fetchRealTimeData(const string& url, vector<CSVRow>& data) {
+    CURL* curl = curl_easy_init();
+    if (curl) {
+        string response;
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+        CURLcode res = curl_easy_perform(curl);
+        if (res == CURLE_OK) {
+            stringstream ss(response);
+            string line;
+            while (getline(ss, line)) {
+                stringstream ls(line);
+                string value;
+                CSVRow row;
+                while (getline(ls, value, ',')) {
+                    row.columns.push_back(value);
+                }
+                lock_guard<mutex> lock(mtx);
+                data.push_back(row);
+            }
+        }
+        curl_easy_cleanup(curl);
+    }
+}
+
 // Function to write processed CSV data to a file
 void writeCSV(const string& filename, const vector<CSVRow>& data) {
     ofstream file(filename);
@@ -89,19 +134,12 @@ void writeCSV(const string& filename, const vector<CSVRow>& data) {
     }
 }
 
-// Function to print CSV data
-void printCSV(const vector<CSVRow>& data) {
-    for (const auto& row : data) {
-        for (const auto& col : row.columns) {
-            cout << col << " ";
-        }
-        cout << endl;
-    }
-}
-
 int main() {
     vector<CSVRow> data;
     string filename = "example.csv";
+
+    // Fetch real-time data from API (Example URL)
+    fetchRealTimeData("https://example.com/realtime.csv", data);
 
     // Multi-threaded CSV reading
     future<void> readerFuture = async(launch::async, readCSV, filename, ref(data));
@@ -116,15 +154,20 @@ int main() {
     // Aggregation example
     auto aggregatedData = aggregateCSV(data, 2);
     
+    // Computing minute-wise PCR
+    auto pcrData = computeMinuteWisePCR(data, 0, 2, 3);
+    
     // Writing sorted data to a new file
     writeCSV("sorted_output.csv", data);
     
     // Writing filtered data to a new file
     writeCSV("filtered_output.csv", filteredData);
     
-    // Printing aggregated results
-    for (const auto& pair : aggregatedData) {
-        cout << pair.first << ": " << pair.second << endl;
+    // Printing minute-wise PCR results
+    cout << "Minute-wise PCR Calculation:\n";
+    for (const auto& entry : pcrData) {
+        double pcr = (entry.second.second == 0) ? 0 : (double)entry.second.first / entry.second.second;
+        cout << entry.first << ", Put Volume: " << entry.second.first << ", Call Volume: " << entry.second.second << ", PCR: " << pcr << endl;
     }
     
     return 0;
